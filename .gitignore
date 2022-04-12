@@ -1,4 +1,6 @@
 # stuff "git status" should ignore
+.DS_Store
+jimtcl
 
 # build output
 .libs
