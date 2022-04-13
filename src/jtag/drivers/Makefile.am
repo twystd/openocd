@@ -189,6 +189,9 @@ endif
 if PICOPROBE
 DRIVERFILES += %D%/picoprobe.c
 endif
+if TIS100
+DRIVERFILES += %D%/TIS100.c
+endif
 if XDS110
 DRIVERFILES += %D%/xds110.c
 endif
