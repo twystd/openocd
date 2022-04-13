@@ -24,8 +24,9 @@
 
 #include <jtag/interface.h>
 #include <jtag/swd.h>
-#include <jtag/commands.h>
+
 #include <helper/command.h>
+#include <jtag/commands.h>
 
 #include "libusb_helper.h"
 
@@ -33,7 +34,7 @@
 #define PID 0x0004 /* Picoprobe */
 
 #define BULK_EP_OUT 4
-#define BULK_EP_IN  5
+#define BULK_EP_IN 5
 #define TIS100_INTERFACE 2
 
 #define TIS100_MAX_PACKET_LENGTH 512
@@ -49,7 +50,8 @@ static struct swd_cmd_queue_entry {
     uint8_t cmd;
     uint32_t *dst;
     uint8_t trn_ack_data_parity_trn[DIV_ROUND_UP(4 + 3 + 32 + 1 + 4, 8)];
-} *swd_cmd_queue;
+} * swd_cmd_queue;
+
 static size_t swd_cmd_queue_length;
 static size_t swd_cmd_queue_alloced;
 static int queued_retval;
@@ -58,12 +60,14 @@ static struct TIS100 *TIS100_handle;
 
 static int TIS100_init(void);
 static int TIS100_quit(void);
+static int TIS100_usb_open(void);
+static void TIS100_usb_close(void);
 
 enum PROBE_CMDS {
-    PROBE_INVALID = 0,   /* Invalid */
+    PROBE_INVALID = 0,    /* Invalid */
     PROBE_WRITE_BITS = 1, /* Host wants us to write bits */
     PROBE_READ_BITS = 2,  /* Host wants us to read bits */
-    PROBE_SET_FREQ = 3, /* Set TCK freq */
+    PROBE_SET_FREQ = 3,   /* Set TCK freq */
     PROBE_RESET = 4
 };
 
@@ -86,31 +90,64 @@ static struct TIS100_queue_entry {
     unsigned bits;
     unsigned offset;
     const uint8_t *buf;
-} *TIS100_queue;
+} * TIS100_queue;
 static size_t TIS100_queue_length;
 static size_t TIS100_queue_alloced;
 
-static inline unsigned packet_length(uint8_t *pkt)
-{
+static int TIS100_init(void) {
+    TIS100_handle = malloc(sizeof(struct TIS100));
+    if (TIS100_handle == NULL) {
+        LOG_ERROR("Failed to allocate memory");
+        return ERROR_FAIL;
+    }
+
+    if (TIS100_usb_open() != ERROR_OK) {
+        LOG_ERROR("Can't find a TIS100 device! Please check device connections and permissions.");
+        return ERROR_JTAG_INIT_FAILED;
+    }
+
+    /* Allocate packet buffers and queues */
+    TIS100_handle->packet_buffer = malloc(TIS100_MAX_PACKET_LENGTH);
+    if (TIS100_handle->packet_buffer == NULL) {
+        LOG_ERROR("Failed to allocate memory for the packet buffer");
+        return ERROR_FAIL;
+    }
+
+    TIS100_queue_alloced = TIS100_QUEUE_SIZE;
+    TIS100_queue_length = 0;
+    TIS100_queue = malloc(TIS100_queue_alloced * sizeof(*TIS100_queue));
+    if (TIS100_queue == NULL)
+        return ERROR_FAIL;
+
+    swd_cmd_queue_alloced = 10;
+    swd_cmd_queue = malloc(swd_cmd_queue_alloced * sizeof(*swd_cmd_queue));
+
+    return swd_cmd_queue != NULL ? ERROR_OK : ERROR_FAIL;
+}
+
+static int TIS100_quit(void) {
+    TIS100_usb_close();
+    return ERROR_OK;
+}
+
+static inline unsigned packet_length(uint8_t *pkt) {
     return pkt - TIS100_handle->packet_buffer;
 }
 
-static int TIS100_bulk_write(struct probe_pkt_hdr *pkt_hdr, uint8_t *pkt)
-{
+static int TIS100_bulk_write(struct probe_pkt_hdr *pkt_hdr, uint8_t *pkt) {
     pkt_hdr->total_packet_length = packet_length(pkt);
     assert(pkt_hdr->total_packet_length <= TIS100_MAX_PACKET_LENGTH);
     int ret = 0;
     jtag_libusb_bulk_write(TIS100_handle->usb_handle,
-              BULK_EP_OUT, (char *)TIS100_handle->packet_buffer, packet_length(pkt), LIBUSB_TIMEOUT,
-              &ret);
+                           BULK_EP_OUT, (char *)TIS100_handle->packet_buffer, packet_length(pkt), LIBUSB_TIMEOUT,
+                           &ret);
     if (ret < 0)
         return ERROR_JTAG_DEVICE_ERROR;
 
     return ERROR_OK;
 }
 
-static int TIS100_flush(void)
-{
+static int TIS100_flush(void) {
     LOG_DEBUG_IO("Flush %d transactions", (int)TIS100_queue_length);
     int ret = ERROR_OK;
 
@@ -170,11 +207,11 @@ static int TIS100_flush(void)
 
     /* Now get any read responses */
     unsigned rx_pkt_len = sizeof(struct probe_pkt_hdr) +
-                         (sizeof(struct probe_cmd_hdr) * total_reads) +
-                         total_read_bytes;
+                          (sizeof(struct probe_cmd_hdr) * total_reads) +
+                          total_read_bytes;
     jtag_libusb_bulk_read(TIS100_handle->usb_handle,
-        BULK_EP_IN | LIBUSB_ENDPOINT_IN, (char *)TIS100_handle->packet_buffer,
-        rx_pkt_len, LIBUSB_TIMEOUT, &ret);
+                          BULK_EP_IN | LIBUSB_ENDPOINT_IN, (char *)TIS100_handle->packet_buffer,
+                          rx_pkt_len, LIBUSB_TIMEOUT, &ret);
 
     if (ret < 0)
         return ERROR_JTAG_DEVICE_ERROR;
@@ -203,8 +240,8 @@ static int TIS100_flush(void)
 
         uint8_t id = read_hdr->id;
         struct TIS100_queue_entry *q = &TIS100_queue[id];
-        assert(read_hdr->cmd  == q->cmd);
-        assert(read_hdr->id   == q->id);
+        assert(read_hdr->cmd == q->cmd);
+        assert(read_hdr->id == q->id);
         assert(read_hdr->bits == q->bits);
         LOG_DEBUG_IO("Processing read of %d bits", read_hdr->bits);
 
@@ -225,8 +262,7 @@ static int TIS100_flush(void)
     return ERROR_OK;
 }
 
-static int TIS100_read_write_bits(const uint8_t *buf, unsigned offset, unsigned length, uint8_t cmd)
-{
+static int TIS100_read_write_bits(const uint8_t *buf, unsigned offset, unsigned length, uint8_t cmd) {
     if (TIS100_queue_length == TIS100_queue_alloced) {
         LOG_ERROR("TIS100 queue full");
         return ERROR_BUF_TOO_SMALL;
@@ -245,14 +281,12 @@ static int TIS100_read_write_bits(const uint8_t *buf, unsigned offset, unsigned 
     return ERROR_OK;
 }
 
-static int TIS100_write_bits(const uint8_t *buf, unsigned offset, unsigned length)
-{
+static int TIS100_write_bits(const uint8_t *buf, unsigned offset, unsigned length) {
     LOG_DEBUG_IO("Write %d bits @ offset %d", length, offset);
     return TIS100_read_write_bits(buf, offset, length, PROBE_WRITE_BITS);
 }
 
-static int TIS100_read_bits(const uint8_t *buf, unsigned offset, unsigned length)
-{
+static int TIS100_read_bits(const uint8_t *buf, unsigned offset, unsigned length) {
     LOG_DEBUG_IO("Read %d bits @ offset %d", length, offset);
 
     if (TIS100_queue_length == TIS100_queue_alloced)
@@ -261,8 +295,7 @@ static int TIS100_read_bits(const uint8_t *buf, unsigned offset, unsigned length
     return TIS100_read_write_bits(buf, offset, length, PROBE_READ_BITS);
 }
 
-static int TIS100_swd_run_queue(void)
-{
+static int TIS100_swd_run_queue(void) {
     LOG_DEBUG_IO("Executing %zu queued transactions", swd_cmd_queue_length);
     int retval;
 
@@ -275,11 +308,10 @@ static int TIS100_swd_run_queue(void)
 
     for (size_t i = 0; i < swd_cmd_queue_length; i++) {
         if (0 == ((swd_cmd_queue[i].cmd ^ swd_cmd(false, false, DP_TARGETSEL)) &
-                (SWD_CMD_APnDP|SWD_CMD_RnW|SWD_CMD_A32))) {
+                  (SWD_CMD_APnDP | SWD_CMD_RnW | SWD_CMD_A32))) {
             /* Targetsel has no ack so force it */
             buf_set_u32(swd_cmd_queue[i].trn_ack_data_parity_trn, 1, 3, SWD_ACK_OK);
         }
-
 
         LOG_DEBUG_IO("trn_ack_data_parity_trn:");
         for (size_t y = 0; y < sizeof(swd_cmd_queue[i].trn_ack_data_parity_trn); y++)
@@ -287,13 +319,15 @@ static int TIS100_swd_run_queue(void)
 
         int ack = buf_get_u32(swd_cmd_queue[i].trn_ack_data_parity_trn, 1, 3);
 
-        LOG_DEBUG_IO("%s %s %s reg %X = %08"PRIx32,
-                ack == SWD_ACK_OK ? "OK" : ack == SWD_ACK_WAIT ? "WAIT" : ack == SWD_ACK_FAULT ? "FAULT" : "JUNK",
-                swd_cmd_queue[i].cmd & SWD_CMD_APnDP ? "AP" : "DP",
-                swd_cmd_queue[i].cmd & SWD_CMD_RnW ? "read" : "write",
-                (swd_cmd_queue[i].cmd & SWD_CMD_A32) >> 1,
-                buf_get_u32(swd_cmd_queue[i].trn_ack_data_parity_trn,
-                        1 + 3 + (swd_cmd_queue[i].cmd & SWD_CMD_RnW ? 0 : 1), 32));
+        LOG_DEBUG_IO("%s %s %s reg %X = %08" PRIx32,
+                     ack == SWD_ACK_OK ? "OK" : ack == SWD_ACK_WAIT ? "WAIT"
+                                            : ack == SWD_ACK_FAULT  ? "FAULT"
+                                                                    : "JUNK",
+                     swd_cmd_queue[i].cmd & SWD_CMD_APnDP ? "AP" : "DP",
+                     swd_cmd_queue[i].cmd & SWD_CMD_RnW ? "read" : "write",
+                     (swd_cmd_queue[i].cmd & SWD_CMD_A32) >> 1,
+                     buf_get_u32(swd_cmd_queue[i].trn_ack_data_parity_trn,
+                                 1 + 3 + (swd_cmd_queue[i].cmd & SWD_CMD_RnW ? 0 : 1), 32));
 
         if (ack != SWD_ACK_OK) {
             queued_retval = ack == SWD_ACK_WAIT ? ERROR_WAIT : ERROR_FAIL;
@@ -326,8 +360,7 @@ skip:
     return retval;
 }
 
-static void TIS100_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data, uint32_t ap_delay_clk)
-{
+static void TIS100_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data, uint32_t ap_delay_clk) {
     if (swd_cmd_queue_length == swd_cmd_queue_alloced)
         queued_retval = TIS100_swd_run_queue();
 
@@ -344,17 +377,17 @@ static void TIS100_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data, uint
         swd_cmd_queue[i].dst = dst;
 
         TIS100_read_bits(swd_cmd_queue[i].trn_ack_data_parity_trn,
-                0, 1 + 3 + 32 + 1 + 1);
+                         0, 1 + 3 + 32 + 1 + 1);
     } else {
         /* Queue a write transaction */
         TIS100_read_bits(swd_cmd_queue[i].trn_ack_data_parity_trn,
-                0, 1 + 3 + 1);
+                         0, 1 + 3 + 1);
 
         buf_set_u32(swd_cmd_queue[i].trn_ack_data_parity_trn, 1 + 3 + 1, 32, data);
         buf_set_u32(swd_cmd_queue[i].trn_ack_data_parity_trn, 1 + 3 + 1 + 32, 1, parity_u32(data));
 
         TIS100_write_bits(swd_cmd_queue[i].trn_ack_data_parity_trn,
-                1 + 3 + 1, 32 + 1);
+                          1 + 3 + 1, 32 + 1);
     }
 
     /* Insert idle cycles after AP accesses to avoid WAIT */
@@ -364,23 +397,19 @@ static void TIS100_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data, uint
         LOG_DEBUG("Add %d idle cycles", ap_delay_clk);
         TIS100_write_bits(NULL, 0, ap_delay_clk);
     }
-
 }
 
-static void TIS100_swd_read_reg(uint8_t cmd, uint32_t *value, uint32_t ap_delay_clk)
-{
+static void TIS100_swd_read_reg(uint8_t cmd, uint32_t *value, uint32_t ap_delay_clk) {
     assert(cmd & SWD_CMD_RnW);
     TIS100_swd_queue_cmd(cmd, value, 0, ap_delay_clk);
 }
 
-static void TIS100_swd_write_reg(uint8_t cmd, uint32_t value, uint32_t ap_delay_clk)
-{
+static void TIS100_swd_write_reg(uint8_t cmd, uint32_t value, uint32_t ap_delay_clk) {
     assert(!(cmd & SWD_CMD_RnW));
     TIS100_swd_queue_cmd(cmd, NULL, value, ap_delay_clk);
 }
 
-static int_least32_t TIS100_set_frequency(int_least32_t hz)
-{
+static int_least32_t TIS100_set_frequency(int_least32_t hz) {
     int ret;
     struct probe_pkt_hdr *pkt_hdr = (struct probe_pkt_hdr *)TIS100_handle->packet_buffer;
 
@@ -403,8 +432,7 @@ static int_least32_t TIS100_set_frequency(int_least32_t hz)
     return hz;
 }
 
-static int_least32_t TIS100_speed(int_least32_t hz)
-{
+static int_least32_t TIS100_speed(int_least32_t hz) {
     int ret = TIS100_set_frequency(hz);
 
     if (ret < 0)
@@ -415,25 +443,21 @@ static int_least32_t TIS100_speed(int_least32_t hz)
     return ERROR_OK;
 }
 
-static int TIS100_khz(int khz, int *jtag_speed)
-{
+static int TIS100_khz(int khz, int *jtag_speed) {
     *jtag_speed = khz * 1000;
     return ERROR_OK;
 }
 
-static int TIS100_speed_div(int speed, int *khz)
-{
+static int TIS100_speed_div(int speed, int *khz) {
     *khz = speed / 1000;
     return ERROR_OK;
 }
 
-static int TIS100_swd_init(void)
-{
+static int TIS100_swd_init(void) {
     return ERROR_OK;
 }
 
-static int TIS100_swd_switch_seq(enum swd_special_seq seq)
-{
+static int TIS100_swd_switch_seq(enum swd_special_seq seq) {
     int ret = ERROR_OK;
 
     switch (seq) {
@@ -465,8 +489,7 @@ static int TIS100_swd_switch_seq(enum swd_special_seq seq)
     return ret;
 }
 
-static int TIS100_reset(int trst, int srst)
-{
+static int TIS100_reset(int trst, int srst) {
     return ERROR_OK;
 }
 
@@ -480,8 +503,7 @@ static const struct swd_driver TIS100_swd = {
 
 const char *TIS100_serial_number = NULL;
 
-static COMMAND_HELPER(handle_serialnum_args, const char **serialNumber)
-{
+static COMMAND_HELPER(handle_serialnum_args, const char **serialNumber) {
     if (CMD_ARGC != 1) {
         LOG_ERROR("%s: need single argument with serial number", CMD_NAME);
         *serialNumber = NULL;
@@ -492,14 +514,13 @@ static COMMAND_HELPER(handle_serialnum_args, const char **serialNumber)
     }
 }
 
-COMMAND_HANDLER(handle_serialnum_command)
-{
+COMMAND_HANDLER(handle_serialnum_command) {
     const char *serialNumber = NULL;
     int retval = CALL_COMMAND_HANDLER(handle_serialnum_args, &serialNumber);
     if (ERROR_OK == retval) {
         TIS100_serial_number = malloc(strlen(serialNumber) + 1);
         if (TIS100_serial_number) {
-            strcpy((char *) TIS100_serial_number, (char *) serialNumber);
+            strcpy((char *)TIS100_serial_number, (char *)serialNumber);
             command_print(CMD, "Using serial number : %s", serialNumber);
         }
     }
@@ -514,9 +535,8 @@ static const struct command_registration serialnum_command_handlers[] = {
         .help = "use TIS100 with this serial number",
         .usage = "'serial number'",
     },
-    COMMAND_REGISTRATION_DONE
-};
-static const char * const TIS100_transports[] = { "swd", NULL };
+    COMMAND_REGISTRATION_DONE};
+static const char *const TIS100_transports[] = {"swd", NULL};
 
 struct adapter_driver TIS100_adapter_driver = {
     .name = "TIS100",
@@ -531,13 +551,12 @@ struct adapter_driver TIS100_adapter_driver = {
     .khz = TIS100_khz,
 };
 
-static int TIS100_usb_open(void)
-{
-    const uint16_t vids[] = { VID, 0 };
-    const uint16_t pids[] = { PID, 0 };
+static int TIS100_usb_open(void) {
+    const uint16_t vids[] = {VID, 0};
+    const uint16_t pids[] = {PID, 0};
 
     if (jtag_libusb_open(vids, pids, TIS100_serial_number,
-            &TIS100_handle->usb_handle, NULL) != ERROR_OK) {
+                         &TIS100_handle->usb_handle, NULL) != ERROR_OK) {
         LOG_ERROR("Failed to open or find the device");
         return ERROR_FAIL;
     }
@@ -550,46 +569,7 @@ static int TIS100_usb_open(void)
     return ERROR_OK;
 }
 
-static void TIS100_usb_close(void)
-{
+static void TIS100_usb_close(void) {
     jtag_libusb_close(TIS100_handle->usb_handle);
 }
 
-static int TIS100_init(void)
-{
-    TIS100_handle = malloc(sizeof(struct TIS100));
-    if (TIS100_handle == NULL) {
-        LOG_ERROR("Failed to allocate memory");
-        return ERROR_FAIL;
-    }
-
-    if (TIS100_usb_open() != ERROR_OK) {
-        LOG_ERROR("Can't find a TIS100 device! Please check device connections and permissions.");
-        return ERROR_JTAG_INIT_FAILED;
-    }
-
-    /* Allocate packet buffers and queues */
-    TIS100_handle->packet_buffer = malloc(TIS100_MAX_PACKET_LENGTH);
-    if (TIS100_handle->packet_buffer == NULL) {
-        LOG_ERROR("Failed to allocate memory for the packet buffer");
-        return ERROR_FAIL;
-    }
-
-    TIS100_queue_alloced = TIS100_QUEUE_SIZE;
-    TIS100_queue_length = 0;
-    TIS100_queue = malloc(TIS100_queue_alloced * sizeof(*TIS100_queue));
-    if (TIS100_queue == NULL)
-        return ERROR_FAIL;
-
-    swd_cmd_queue_alloced = 10;
-    swd_cmd_queue = malloc(swd_cmd_queue_alloced * sizeof(*swd_cmd_queue));
-
-    return swd_cmd_queue != NULL ? ERROR_OK : ERROR_FAIL;
-}
-
-
-static int TIS100_quit(void)
-{
-    TIS100_usb_close();
-    return ERROR_OK;
-}
