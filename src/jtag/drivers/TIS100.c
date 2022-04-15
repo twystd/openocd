@@ -65,12 +65,13 @@ static int TIS100_usb_open(void);
 static void TIS100_usb_close(void);
 
 enum PROBE_CMDS {
-    PROBE_INVALID = 0,    // Invalid
-    PROBE_WRITE_BITS = 1, // Host wants us to write bits
-    PROBE_READ_BITS = 2,  // Host wants us to read bits
-    PROBE_SET_FREQ = 3,   // Set TCK freq
-    PROBE_RESET = 4,      //
-    PROBE_MUX = 5         // Sets the TIS-100 probe MUX address
+    PROBE_INVALID = 0,      // Invalid
+    PROBE_WRITE_BITS = 1,   // Host wants us to write bits
+    PROBE_READ_BITS = 2,    // Host wants us to read bits
+    PROBE_SET_FREQ = 3,     // Set TCK freq
+    PROBE_RESET = 4,        //
+    PROBE_TARGET_RESET = 5, // Reset target
+    PROBE_TIS100_MUX = 6,   // Set TIS-100 MUX address
 };
 
 struct __attribute__((__packed__)) probe_cmd_hdr {
@@ -508,34 +509,36 @@ static int TIS100_set_mux_addr(uint32_t address) {
     LOG_INFO("... TIS100 queue length:    %d", (int)TIS100_queue_length);
     LOG_INFO("...              allocated: %d", (int)TIS100_queue_alloced);
 
-    // if (TIS100_queue_alloced == 0) {
-    //     LOG_ERROR("TIS100 queue not initialised");
-    //     return ERROR_FAIL;
-    // }
+    if (TIS100_queue_alloced == 0) {
+        LOG_ERROR("TIS100 queue not initialised");
+        return ERROR_FAIL;
+    }
 
-    // if (TIS100_queue_length == TIS100_queue_alloced) {
-    //     LOG_ERROR("TIS100 queue full");
-    //     return ERROR_BUF_TOO_SMALL;
-    // }
+    if (TIS100_queue_length == TIS100_queue_alloced) {
+        LOG_ERROR("TIS100 queue full");
+        return ERROR_BUF_TOO_SMALL;
+    }
 
-    // int ret;
-    // struct probe_pkt_hdr *pkt_hdr = (struct probe_pkt_hdr *)TIS100_handle->packet_buffer;
+    int ret;
+    struct probe_pkt_hdr *pkt_hdr = (struct probe_pkt_hdr *)TIS100_handle->packet_buffer;
 
-    // assert(TIS100_queue_length == 0);
+    assert(TIS100_queue_length == 0);
 
-    // /* Chain writes and read commands together */
-    // uint8_t *pkt = TIS100_handle->packet_buffer + sizeof(struct probe_pkt_hdr);
-    // struct probe_cmd_hdr *hdr = (struct probe_cmd_hdr *)pkt;
-    // hdr->id = 0;
-    // hdr->cmd = PROBE_MUX;
-    // hdr->bits = 7;
-    // pkt += sizeof(struct probe_cmd_hdr);
+    /* Chain writes and read commands together */
+    uint8_t *pkt = TIS100_handle->packet_buffer + sizeof(struct probe_pkt_hdr);
+    struct probe_cmd_hdr *hdr = (struct probe_cmd_hdr *)pkt;
+    hdr->id = 0;
+    hdr->cmd = PROBE_TIS100_MUX;
+    hdr->bits = 7;
+    pkt += sizeof(struct probe_cmd_hdr);
 
-    // /* Send all read/write commands + write data */
-    // ret = TIS100_bulk_write(pkt_hdr, pkt);
-    // if (ret < 0) {
-    //     return ERROR_JTAG_DEVICE_ERROR;
-    // }
+    /* Send all read/write commands + write data */
+    ret = TIS100_bulk_write(pkt_hdr, pkt);
+    if (ret < 0) {
+        return ERROR_JTAG_DEVICE_ERROR;
+    }
+
+    LOG_INFO("... set TIS-100 mux address to %d", address);
 
     return ERROR_OK;
 }
@@ -589,7 +592,7 @@ COMMAND_HANDLER(handle_mux_command) {
     }
 
     LOG_INFO("TIS-100 MUX address is %d", address);
-    TIS100_mux_address = address;
+    TIS100_set_mux_addr(address);
 
     return ERROR_OK;
 }
