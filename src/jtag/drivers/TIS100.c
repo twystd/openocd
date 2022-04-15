@@ -94,6 +94,8 @@ static struct TIS100_queue_entry {
 static size_t TIS100_queue_length;
 static size_t TIS100_queue_alloced;
 
+const char *TIS100_serial_number = NULL;
+
 static int TIS100_init(void) {
     TIS100_handle = malloc(sizeof(struct TIS100));
     if (TIS100_handle == NULL) {
@@ -435,21 +437,24 @@ static int_least32_t TIS100_set_frequency(int_least32_t hz) {
 static int_least32_t TIS100_speed(int_least32_t hz) {
     int ret = TIS100_set_frequency(hz);
 
-    if (ret < 0)
+    if (ret < 0) {
         LOG_ERROR("Couldn't set TIS100 speed");
-    else
+    } else {
         TIS100_handle->freq = ret;
+    }
 
     return ERROR_OK;
 }
 
 static int TIS100_khz(int khz, int *jtag_speed) {
     *jtag_speed = khz * 1000;
+
     return ERROR_OK;
 }
 
 static int TIS100_speed_div(int speed, int *khz) {
     *khz = speed / 1000;
+
     return ERROR_OK;
 }
 
@@ -501,8 +506,6 @@ static const struct swd_driver TIS100_swd = {
     .run = TIS100_swd_run_queue,
 };
 
-const char *TIS100_serial_number = NULL;
-
 static COMMAND_HELPER(handle_serialnum_args, const char **serialNumber) {
     if (CMD_ARGC != 1) {
         LOG_ERROR("%s: need single argument with serial number", CMD_NAME);
@@ -517,6 +520,7 @@ static COMMAND_HELPER(handle_serialnum_args, const char **serialNumber) {
 COMMAND_HANDLER(handle_serialnum_command) {
     const char *serialNumber = NULL;
     int retval = CALL_COMMAND_HANDLER(handle_serialnum_args, &serialNumber);
+
     if (ERROR_OK == retval) {
         TIS100_serial_number = malloc(strlen(serialNumber) + 1);
         if (TIS100_serial_number) {
@@ -524,7 +528,27 @@ COMMAND_HANDLER(handle_serialnum_command) {
             command_print(CMD, "Using serial number : %s", serialNumber);
         }
     }
+
     return retval;
+}
+
+COMMAND_HANDLER(handle_mux_command) {
+    uint32_t address;
+
+    if (CMD_ARGC < 1 || CMD_ARGC > 2) {
+        return ERROR_COMMAND_SYNTAX_ERROR;
+    }
+
+    COMMAND_PARSE_NUMBER(u32, CMD_ARGV[0], address);
+
+    if (address > 16) {
+        LOG_ERROR("Invalid MUX address (%d) - valid range is [0..16]", address);
+        return ERROR_COMMAND_ARGUMENT_INVALID;
+    }
+
+    LOG_INFO("TIS-100 MUX address is %d", address);
+
+    return ERROR_OK;
 }
 
 static const struct command_registration serialnum_command_handlers[] = {
@@ -535,7 +559,16 @@ static const struct command_registration serialnum_command_handlers[] = {
         .help = "use TIS100 with this serial number",
         .usage = "'serial number'",
     },
-    COMMAND_REGISTRATION_DONE};
+    {
+        .name = "mux",
+        .mode = COMMAND_ANY,
+        .handler = handle_mux_command,
+        .help = "set the TIS-100 SWD multiplexer address",
+        .usage = "[name]",
+    },
+    COMMAND_REGISTRATION_DONE,
+};
+
 static const char *const TIS100_transports[] = {"swd", NULL};
 
 struct adapter_driver TIS100_adapter_driver = {
@@ -572,4 +605,3 @@ static int TIS100_usb_open(void) {
 static void TIS100_usb_close(void) {
     jtag_libusb_close(TIS100_handle->usb_handle);
 }
-
