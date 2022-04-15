@@ -1,8 +1,8 @@
 /***************************************************************************
- *   Copyright (C) 2020 by Liam Fraser                                     *
- *   liam@raspberrypi.com                                                  *
+ *   Copyright (C) 2022 by twyst                                           *
+ *   info@twyst.co.za                                                      *
  *                                                                         *
- *   Based on: kitprog.c, ftdi.c, mpsse.c                                  *
+ *   Based on: picoprobe.c                                                 *
  *                                                                         *
  *   This program is free software; you can redistribute it and/or modify  *
  *   it under the terms of the GNU General Public License as published by  *
@@ -56,6 +56,7 @@ static size_t swd_cmd_queue_length;
 static size_t swd_cmd_queue_alloced;
 static int queued_retval;
 
+static uint32_t TIS100_mux_address;
 static struct TIS100 *TIS100_handle;
 
 static int TIS100_init(void);
@@ -64,11 +65,12 @@ static int TIS100_usb_open(void);
 static void TIS100_usb_close(void);
 
 enum PROBE_CMDS {
-    PROBE_INVALID = 0,    /* Invalid */
-    PROBE_WRITE_BITS = 1, /* Host wants us to write bits */
-    PROBE_READ_BITS = 2,  /* Host wants us to read bits */
-    PROBE_SET_FREQ = 3,   /* Set TCK freq */
-    PROBE_RESET = 4
+    PROBE_INVALID = 0,    // Invalid
+    PROBE_WRITE_BITS = 1, // Host wants us to write bits
+    PROBE_READ_BITS = 2,  // Host wants us to read bits
+    PROBE_SET_FREQ = 3,   // Set TCK freq
+    PROBE_RESET = 4,      //
+    PROBE_MUX = 5         // Sets the TIS-100 probe MUX address
 };
 
 struct __attribute__((__packed__)) probe_cmd_hdr {
@@ -97,6 +99,8 @@ static size_t TIS100_queue_alloced;
 const char *TIS100_serial_number = NULL;
 
 static int TIS100_init(void) {
+    LOG_INFO("... TIS-100 init");
+
     TIS100_handle = malloc(sizeof(struct TIS100));
     if (TIS100_handle == NULL) {
         LOG_ERROR("Failed to allocate memory");
@@ -498,6 +502,44 @@ static int TIS100_reset(int trst, int srst) {
     return ERROR_OK;
 }
 
+static int TIS100_set_mux_addr(uint32_t address) {
+    LOG_INFO("... setting TIS-100 mux address to %d", address);
+
+    LOG_INFO("... TIS100 queue length:    %d", (int)TIS100_queue_length);
+    LOG_INFO("...              allocated: %d", (int)TIS100_queue_alloced);
+
+    // if (TIS100_queue_alloced == 0) {
+    //     LOG_ERROR("TIS100 queue not initialised");
+    //     return ERROR_FAIL;
+    // }
+
+    // if (TIS100_queue_length == TIS100_queue_alloced) {
+    //     LOG_ERROR("TIS100 queue full");
+    //     return ERROR_BUF_TOO_SMALL;
+    // }
+
+    // int ret;
+    // struct probe_pkt_hdr *pkt_hdr = (struct probe_pkt_hdr *)TIS100_handle->packet_buffer;
+
+    // assert(TIS100_queue_length == 0);
+
+    // /* Chain writes and read commands together */
+    // uint8_t *pkt = TIS100_handle->packet_buffer + sizeof(struct probe_pkt_hdr);
+    // struct probe_cmd_hdr *hdr = (struct probe_cmd_hdr *)pkt;
+    // hdr->id = 0;
+    // hdr->cmd = PROBE_MUX;
+    // hdr->bits = 7;
+    // pkt += sizeof(struct probe_cmd_hdr);
+
+    // /* Send all read/write commands + write data */
+    // ret = TIS100_bulk_write(pkt_hdr, pkt);
+    // if (ret < 0) {
+    //     return ERROR_JTAG_DEVICE_ERROR;
+    // }
+
+    return ERROR_OK;
+}
+
 static const struct swd_driver TIS100_swd = {
     .init = TIS100_swd_init,
     .switch_seq = TIS100_swd_switch_seq,
@@ -547,6 +589,7 @@ COMMAND_HANDLER(handle_mux_command) {
     }
 
     LOG_INFO("TIS-100 MUX address is %d", address);
+    TIS100_mux_address = address;
 
     return ERROR_OK;
 }
@@ -564,7 +607,7 @@ static const struct command_registration serialnum_command_handlers[] = {
         .mode = COMMAND_ANY,
         .handler = handle_mux_command,
         .help = "set the TIS-100 SWD multiplexer address",
-        .usage = "[name]",
+        .usage = "address",
     },
     COMMAND_REGISTRATION_DONE,
 };
