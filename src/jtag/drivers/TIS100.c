@@ -505,7 +505,6 @@ static int TIS100_reset(int trst, int srst) {
 
 static int TIS100_set_mux_addr(uint32_t address) {
     LOG_INFO("... setting TIS-100 mux address to %d", address);
-
     LOG_INFO("... TIS100 queue length:    %d", (int)TIS100_queue_length);
     LOG_INFO("...              allocated: %d", (int)TIS100_queue_alloced);
 
@@ -529,7 +528,7 @@ static int TIS100_set_mux_addr(uint32_t address) {
     struct probe_cmd_hdr *hdr = (struct probe_cmd_hdr *)pkt;
     hdr->id = 0;
     hdr->cmd = PROBE_TIS100_MUX;
-    hdr->bits = 7;
+    hdr->bits = address;
     pkt += sizeof(struct probe_cmd_hdr);
 
     /* Send all read/write commands + write data */
