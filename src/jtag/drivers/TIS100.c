@@ -71,7 +71,8 @@ enum PROBE_CMDS {
     PROBE_SET_FREQ = 3,     // Set TCK freq
     PROBE_RESET = 4,        //
     PROBE_TARGET_RESET = 5, // Reset target
-    PROBE_TIS100_MUX = 6,   // Set TIS-100 MUX address
+    PROBE_TIS100_RESET = 6, // Reset TIS-100
+    PROBE_TIS100_MUX = 7,   // Set TIS-100 MUX address
 };
 
 struct __attribute__((__packed__)) probe_cmd_hdr {
@@ -503,6 +504,45 @@ static int TIS100_reset(int trst, int srst) {
     return ERROR_OK;
 }
 
+static int TIS100_restart() {
+    LOG_INFO("... resetting TIS-100 mesh");
+    LOG_INFO("... TIS100 queue length:    %d", (int)TIS100_queue_length);
+    LOG_INFO("...              allocated: %d", (int)TIS100_queue_alloced);
+
+    if (TIS100_queue_alloced == 0) {
+        LOG_ERROR("TIS100 queue not initialised");
+        return ERROR_FAIL;
+    }
+
+    if (TIS100_queue_length == TIS100_queue_alloced) {
+        LOG_ERROR("TIS100 queue full");
+        return ERROR_BUF_TOO_SMALL;
+    }
+
+    int ret;
+    struct probe_pkt_hdr *pkt_hdr = (struct probe_pkt_hdr *)TIS100_handle->packet_buffer;
+
+    assert(TIS100_queue_length == 0);
+
+    /* Chain writes and read commands together */
+    uint8_t *pkt = TIS100_handle->packet_buffer + sizeof(struct probe_pkt_hdr);
+    struct probe_cmd_hdr *hdr = (struct probe_cmd_hdr *)pkt;
+    hdr->id = 0;
+    hdr->cmd = PROBE_TIS100_RESET;
+    hdr->bits = 0;
+    pkt += sizeof(struct probe_cmd_hdr);
+
+    /* Send all read/write commands + write data */
+    ret = TIS100_bulk_write(pkt_hdr, pkt);
+    if (ret < 0) {
+        return ERROR_JTAG_DEVICE_ERROR;
+    }
+
+    LOG_INFO("... reset TIS-100 mesh");
+
+    return ERROR_OK;
+}
+
 static int TIS100_set_mux_addr(uint32_t address) {
     LOG_INFO("... setting TIS-100 mux address to %d", address);
     LOG_INFO("... TIS100 queue length:    %d", (int)TIS100_queue_length);
@@ -576,6 +616,12 @@ COMMAND_HANDLER(handle_serialnum_command) {
     return retval;
 }
 
+COMMAND_HANDLER(handle_restart_command) {
+    TIS100_restart();
+
+    return ERROR_OK;
+}
+
 COMMAND_HANDLER(handle_mux_command) {
     uint32_t address;
 
@@ -603,6 +649,13 @@ static const struct command_registration serialnum_command_handlers[] = {
         .handler = handle_serialnum_command,
         .help = "use TIS100 with this serial number",
         .usage = "'serial number'",
+    },
+    {
+        .name = "restart",
+        .mode = COMMAND_ANY,
+        .handler = handle_restart_command,
+        .help = "resets the TIS-100 mesh",
+        .usage = "",
     },
     {
         .name = "mux",
