@@ -63,6 +63,7 @@ static int TIS100_init(void);
 static int TIS100_quit(void);
 static int TIS100_usb_open(void);
 static void TIS100_usb_close(void);
+static int TIS100_set_mux_addr(uint32_t);
 
 enum PROBE_CMDS {
     PROBE_INVALID = 0,      // Invalid
@@ -102,6 +103,7 @@ const char *TIS100_serial_number = NULL;
 
 static int TIS100_init(void) {
     LOG_INFO("... TIS-100 init");
+    LOG_INFO("... TIS-100 MUX address %d", TIS100_mux_address);
 
     TIS100_handle = malloc(sizeof(struct TIS100));
     if (TIS100_handle == NULL) {
@@ -130,7 +132,13 @@ static int TIS100_init(void) {
     swd_cmd_queue_alloced = 10;
     swd_cmd_queue = malloc(swd_cmd_queue_alloced * sizeof(*swd_cmd_queue));
 
-    return swd_cmd_queue != NULL ? ERROR_OK : ERROR_FAIL;
+    if (swd_cmd_queue == NULL) {
+        return ERROR_FAIL;
+    }
+
+    TIS100_set_mux_addr(TIS100_mux_address);
+
+    return ERROR_OK;
 }
 
 static int TIS100_quit(void) {
@@ -544,19 +552,18 @@ static int TIS100_restart() {
 }
 
 static int TIS100_set_mux_addr(uint32_t address) {
-    LOG_INFO("... setting TIS-100 mux address to %d", address);
-    LOG_INFO("... TIS100 queue length:    %d", (int)TIS100_queue_length);
-    LOG_INFO("...              allocated: %d", (int)TIS100_queue_alloced);
-
     if (TIS100_queue_alloced == 0) {
-        LOG_ERROR("TIS100 queue not initialised");
-        return ERROR_FAIL;
+        return ERROR_OK;
     }
 
     if (TIS100_queue_length == TIS100_queue_alloced) {
         LOG_ERROR("TIS100 queue full");
         return ERROR_BUF_TOO_SMALL;
     }
+
+    LOG_INFO("... setting TIS-100 mux address to %d", address);
+    LOG_INFO("... TIS100 queue length:    %d", (int)TIS100_queue_length);
+    LOG_INFO("...              allocated: %d", (int)TIS100_queue_alloced);
 
     int ret;
     struct probe_pkt_hdr *pkt_hdr = (struct probe_pkt_hdr *)TIS100_handle->packet_buffer;
@@ -631,20 +638,22 @@ COMMAND_HANDLER(handle_mux_command) {
 
     COMMAND_PARSE_NUMBER(u32, CMD_ARGV[0], address);
 
-    if (address > 16) {
-        LOG_ERROR("Invalid MUX address (%d) - valid range is [0..16]", address);
+    if (address >= 16) {
+        LOG_ERROR("Invalid MUX address (%d) - valid range is [0..15]", address);
         return ERROR_COMMAND_ARGUMENT_INVALID;
     }
 
     LOG_INFO("TIS-100 MUX address is %d", address);
+
+    TIS100_mux_address = address;
     TIS100_set_mux_addr(address);
 
     return ERROR_OK;
 }
 
-static const struct command_registration serialnum_command_handlers[] = {
+static const struct command_registration TIS100_command_handlers[] = {
     {
-        .name = "TIS100_serialnum",
+        .name = "TIS100 serial number",
         .mode = COMMAND_ANY,
         .handler = handle_serialnum_command,
         .help = "use TIS100 with this serial number",
@@ -671,7 +680,7 @@ static const char *const TIS100_transports[] = {"swd", NULL};
 
 struct adapter_driver TIS100_adapter_driver = {
     .name = "TIS100",
-    .commands = serialnum_command_handlers,
+    .commands = TIS100_command_handlers,
     .transports = TIS100_transports,
     .swd_ops = &TIS100_swd,
     .init = TIS100_init,
